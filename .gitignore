@@ -1,0 +1,12 @@
+build*/
+cmake-build*/
+
+# CLion
+.idea/
+
+# QtCreator
+CMakeLists.txt.user
+
+# place libopencm3 into project root directory and make it
+# https://github.com/libopencm3
+libopencm3
