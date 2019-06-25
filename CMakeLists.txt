@@ -20,6 +20,7 @@ set(CPU_FLAGS
 	-DSTM32F1 # Define the series of MCU we are using. This controls the include pathways inside libopencm3
 	-mthumb # Use thumb mode (smaller instructions)
 	-ggdb3 # Include additional debug info
+	-Og
 	-ffunction-sections # Generate separate ELF section for each function
 	-fdata-sections # Enable elf section per variable
 )
@@ -35,7 +36,8 @@ include_directories(
 
 # executable
 add_executable(bluepill
-	main.c
+	#main.c
+	cdcacm.c
 )
 target_compile_options(bluepill PUBLIC ${CPU_FLAGS})
 set_target_properties(bluepill PROPERTIES
