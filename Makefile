@@ -1,14 +1,24 @@
-.PHONY: release clean
+DEVICE = STM32F103C8
+OPENCM3_DIR = libopencm3
+OBJS += main.o
 
-# build release
-release:
-	mkdir -p build
-	cd build && cmake .. && make
+CFLAGS += -Os -ggdb3
+CPPFLAGS += -MD
+LDFLAGS += -static -nostartfiles
+LDLIBS += -Wl,--start-group -lc -lgcc -lnosys -Wl,--end-group
 
-# flash to device
-flash: release
-	cd build && arm-none-eabi-objcopy --only-section=.text --output-target binary bluepill bluepill.bin
-	cd build && st-flash write bluepill.bin 0x8000000
+include $(OPENCM3_DIR)/mk/genlink-config.mk
+include $(OPENCM3_DIR)/mk/gcc-config.mk
+
+.PHONY: clean all
+
+all: binary.elf binary.bin
+
+flash: binary.bin
+	st-flash write binary.bin 0x8000000
 
 clean:
-	rm -rf build
+	$(Q)$(RM) -rf binary.* *.o
+
+include $(OPENCM3_DIR)/mk/genlink-rules.mk
+include $(OPENCM3_DIR)/mk/gcc-rules.mk

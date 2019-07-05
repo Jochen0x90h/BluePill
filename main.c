@@ -2,246 +2,260 @@
 #include <stdint.h>
 #include <libopencm3/stm32/gpio.h>
 #include <libopencm3/stm32/rcc.h>
-#include <libopencm3/usb/usbd.h>
-#include <libopencm3/usb/cdc.h>
+#include <libopencm3/stm32/st_usbfs.h>
+//#include <libopencm3/usb/usbd.h>
+//#include <libopencm3/usb/cdc.h>
 
 // stm32f103xx reference manual: https://www.st.com/content/ccc/resource/technical/document/reference_manual/59/b9/ba/7f/11/af/43/d5/CD00171190.pdf/files/CD00171190.pdf/jcr:content/translations/en.CD00171190.pdf
+//   usb: chapter 23, page 622
 // usb overview: https://www.beyondlogic.org/usbnutshell/usb5.shtml
 // usb example: https://github.com/libopencm3/libopencm3-examples/blob/master/examples/stm32/f1/stm32-maple/usb_cdcacm/cdcacm.c
 
 
-// device
-static const struct usb_device_descriptor device = {
-	.bLength = USB_DT_DEVICE_SIZE,
-	.bDescriptorType = USB_DT_DEVICE,
+// usb device descriptor, see libusb.h
+struct usbDeviceDescriptor {
+	uint8_t  bLength;
+	uint8_t  bDescriptorType;
+	uint16_t bcdUSB;
+	uint8_t  bDeviceClass;
+	uint8_t  bDeviceSubClass;
+	uint8_t  bDeviceProtocol;
+	uint8_t  bMaxPacketSize0;
+	uint16_t idVendor;
+	uint16_t idProduct;
+	uint16_t bcdDevice;
+	uint8_t  iManufacturer;
+	uint8_t  iProduct;
+	uint8_t  iSerialNumber;
+	uint8_t  bNumConfigurations;
+};
+
+static const struct usbDeviceDescriptor device = {
+	.bLength = sizeof(struct usbDeviceDescriptor),
+	.bDescriptorType = 0x01,//USB_DT_DEVICE,
 	.bcdUSB = 0x0200, // USB 2.0
-	.bDeviceClass = USB_CLASS_CDC, // communications device class
+	.bDeviceClass = 0, //USB_CLASS_CDC, // communications device class
 	.bDeviceSubClass = 0,
 	.bDeviceProtocol = 0,
 	.bMaxPacketSize0 = 64, // max packet size for endpoint 0
 	.idVendor = 0x0483,
 	.idProduct = 0x5740,
 	.bcdDevice = 0x0200, // device version
-	.iManufacturer = 1, // index into string table
-	.iProduct = 2, // index into string table
-	.iSerialNumber = 3, // index into string table
+	.iManufacturer = 0, // index into string table
+	.iProduct = 0, // index into string table
+	.iSerialNumber = 0, // index into string table
 	.bNumConfigurations = 1,
 };
 
-// command endpoint
-static const struct usb_endpoint_descriptor command_endpoint[] = {{
-	.bLength = USB_DT_ENDPOINT_SIZE,
-	.bDescriptorType = USB_DT_ENDPOINT,
-	.bEndpointAddress = 0x83,
-	.bmAttributes = USB_ENDPOINT_ATTR_INTERRUPT,
-	.wMaxPacketSize = 16,
-	.bInterval = 255,
-}};
 
-// 
-static const struct {
-	struct usb_cdc_header_descriptor header;
-	struct usb_cdc_call_management_descriptor call_mgmt;
-	struct usb_cdc_acm_descriptor acm;
-	struct usb_cdc_union_descriptor cdc_union;
-} __attribute__((packed)) cdcacm_functional_descriptors = {
-	.header = {
-		.bFunctionLength = sizeof(struct usb_cdc_header_descriptor),
-		.bDescriptorType = CS_INTERFACE,
-		.bDescriptorSubtype = USB_CDC_TYPE_HEADER,
-		.bcdCDC = 0x0110,
-	},
-	.call_mgmt = {
-		.bFunctionLength =
-			sizeof(struct usb_cdc_call_management_descriptor),
-		.bDescriptorType = CS_INTERFACE,
-		.bDescriptorSubtype = USB_CDC_TYPE_CALL_MANAGEMENT,
-		.bmCapabilities = 0,
-		.bDataInterface = 1,
-	},
-	.acm = {
-		.bFunctionLength = sizeof(struct usb_cdc_acm_descriptor),
-		.bDescriptorType = CS_INTERFACE,
-		.bDescriptorSubtype = USB_CDC_TYPE_ACM,
-		.bmCapabilities = 0,
-	},
-	.cdc_union = {
-		.bFunctionLength = sizeof(struct usb_cdc_union_descriptor),
-		.bDescriptorType = CS_INTERFACE,
-		.bDescriptorSubtype = USB_CDC_TYPE_UNION,
-		.bControlInterface = 0,
-		.bSubordinateInterface0 = 1,
-	 },
+struct usbRequest {
+	uint8_t bmRequestType;
+	uint8_t bRequest;
+	uint16_t wValue;
+	uint16_t wIndex;
+	uint16_t wLength;
 };
 
-// command interface (array of alternate settings)
-static const struct usb_interface_descriptor command_interface[] = {{
-	.bLength = USB_DT_INTERFACE_SIZE,
-	.bDescriptorType = USB_DT_INTERFACE,
-	.bInterfaceNumber = 0,
-	.bAlternateSetting = 0,
-	.bNumEndpoints = 1,
-	.bInterfaceClass = USB_CLASS_CDC,
-	.bInterfaceSubClass = USB_CDC_SUBCLASS_ACM,
-	.bInterfaceProtocol = USB_CDC_PROTOCOL_AT,
-	.iInterface = 0, // index into string table
+struct usbRequest request;
 
-	.endpoint = command_endpoint,
+//uint8_t buffer[128];
 
-	.extra = &cdcacm_functional_descriptors,
-	.extralen = sizeof(cdcacm_functional_descriptors),
-}};
 
-// data endpoints
-static const struct usb_endpoint_descriptor data_endpoint[] = {{
-	.bLength = USB_DT_ENDPOINT_SIZE,
-	.bDescriptorType = USB_DT_ENDPOINT,
-	.bEndpointAddress = 0x01,
-	.bmAttributes = USB_ENDPOINT_ATTR_BULK,
-	.wMaxPacketSize = 64,
-	.bInterval = 1,
-}, {
-	.bLength = USB_DT_ENDPOINT_SIZE,
-	.bDescriptorType = USB_DT_ENDPOINT,
-	.bEndpointAddress = 0x82,
-	.bmAttributes = USB_ENDPOINT_ATTR_BULK,
-	.wMaxPacketSize = 64,
-	.bInterval = 1,
-}};
+void setupUsb() {
+	// clear interrupts of usb
+	SET_REG(USB_ISTR_REG, 0);
 
-// data interface (array of alternate settings)
-static const struct usb_interface_descriptor data_interface[] = {{
-	.bLength = USB_DT_INTERFACE_SIZE,
-	.bDescriptorType = USB_DT_INTERFACE,
-	.bInterfaceNumber = 1,
-	.bAlternateSetting = 0,
-	.bNumEndpoints = 2,
-	.bInterfaceClass = USB_CLASS_DATA,
-	.bInterfaceSubClass = 0,
-	.bInterfaceProtocol = 0,
-	.iInterface = 0, // index into string table
+	// packet memory layout
+	// offset | size | description
+	//      0 |    8 | buffer table
+	//      8 |   64 | tx buffer of endpoint 0
+	//     72 |   64 | rx buffer of endpoint 0
 
-	.endpoint = data_endpoint,
-}};
+	// set buffer table address inside packet memory (USB_PMA_BASE)
+	SET_REG(USB_BTABLE_REG, 0);
+	
+	// setup buffers for endpoint 0
+	SET_REG(USB_EP_TX_ADDR(0), 8);
+	//SET_REG(USB_EP_TX_COUNT(0), ??); set tx buffer size when actually sending
+	SET_REG(USB_EP_RX_ADDR(0), 72);
+	SET_REG(USB_EP_RX_COUNT(0), 0x8000 | (2 << 10)); // rx buffer size is 64
 
-// interfaces
-static const struct usb_interface interfaces[] = {{
-	.num_altsetting = 1,
-	.altsetting = command_interface,
-}, {
-	.num_altsetting = 1,
-	.altsetting = data_interface,
-}};
+	// setup endpoint 0
+	SET_REG(USB_EP_REG(0), USB_EP_TYPE_CONTROL | USB_EP_RX_STAT_VALID);
 
-// configurations
-static const struct usb_config_descriptor config = {
-	.bLength = USB_DT_CONFIGURATION_SIZE,
-	.bDescriptorType = USB_DT_CONFIGURATION,
-	.wTotalLength = 0, // number of bytes for hierarchy of interfaces and endpoints
-	.bNumInterfaces = 2,
-	.bConfigurationValue = 1,
-	.iConfiguration = 0, // index into string table
-	.bmAttributes = 0x80, // 0x40 = self powered, 0x80 = bus powered
-	.bMaxPower = 100/2, // max power in mA
+	// enable usb at address 0
+	SET_REG(USB_DADDR_REG, USB_DADDR_EF);
+}
 
-	.interface = interfaces,
+inline int min(int a, int b) {
+	return a < b ? a : b;
+}
+
+enum Mode {
+	IDLE,
+	SET_ADDRESS,
+	GET_DESCRIPTOR,
 };
+uint8_t address = 0;
 
-// string table
-static const char *strings[] = {
-	"Cyberdyne Systems", // Manufacturer
-	"Terminator", // Product
-	"T-1000", // Serial Number
-};
-
-uint8_t control_buffer[128];
-
-static enum usbd_request_return_codes cdcacm_control_request(usbd_device *usbd_dev,
-	struct usb_setup_data *req, uint8_t **buf, uint16_t *len,
-	void (**complete)(usbd_device *usbd_dev, struct usb_setup_data *req))
-{
-	switch (req->bRequest) {
-	case USB_CDC_REQ_SET_CONTROL_LINE_STATE: {
-		/*
-		 * This Linux cdc_acm driver requires this to be implemented
-		 * even though it's optional in the CDC spec, and we don't
-		 * advertise it in the ACM functional descriptor.
-		 */
-		char local_buf[10];
-		struct usb_cdc_notification *notif = (void *)local_buf;
-
-		/* We echo signals back to host as notification. */
-		notif->bmRequestType = 0xA1;
-		notif->bNotification = USB_CDC_NOTIFY_SERIAL_STATE;
-		notif->wValue = 0;
-		notif->wIndex = 0;
-		notif->wLength = 2;
-		local_buf[8] = req->wValue & 3;
-		local_buf[9] = 0;
-		// usbd_ep_write_packet(0x83, buf, 10);
-		return USBD_REQ_HANDLED;
-		}
-	case USB_CDC_REQ_SET_LINE_CODING:
-		if (*len < sizeof(struct usb_cdc_line_coding))
-			return USBD_REQ_NOTSUPP;
-		return USBD_REQ_HANDLED;
+void send(int ep, const void *data, int size) {
+	// copy data from flash into tx buffer
+	const uint16_t * src = (const uint16_t*)data;
+	uint16_t * dst = (uint16_t*)USB_GET_EP_TX_BUFF(ep);
+	int s = (size + 1) / 2;
+	for (int i = 0; i < s; ++i) {
+		*dst = *src;
+		++src; // ABP1 is 32 bit only
+		dst += 2;
 	}
-	return USBD_REQ_NOTSUPP;
+	
+	// set size of packet in tx buffer
+	SET_REG(USB_EP_TX_COUNT(ep), size);
+	
+	
+	// don't change rx flag
+	uint16_t one = USB_EP_RX_CTR; 
+
+	// clear tx flag and don't change toggle other toggle flags
+	uint16_t zero = USB_EP_TX_CTR | USB_EP_RX_DTOG | USB_EP_TX_DTOG | USB_EP_RX_STAT;
+
+	// indicate that we are ready to send
+	uint16_t epReg = GET_REG(USB_EP_REG(ep));
+	SET_REG(USB_EP_REG(ep), one | ((epReg ^ USB_EP_TX_STAT_VALID) & ~zero));
 }
-
-static void cdcacm_data_rx_cb(usbd_device *usbd_dev, uint8_t ep)
-{
-	char buf[64];
-	int len = usbd_ep_read_packet(usbd_dev, 0x01, buf, 64);
-
-	// echo
-	if (len) {
-		usbd_ep_write_packet(usbd_dev, 0x82, buf, len);
-buf[len] = 0;
-	}
-}
-
-static void cdcacm_set_config(usbd_device *usbd_dev, uint16_t value)
-{
-	usbd_ep_setup(usbd_dev, 0x01, USB_ENDPOINT_ATTR_BULK, 64, cdcacm_data_rx_cb);
-	usbd_ep_setup(usbd_dev, 0x82, USB_ENDPOINT_ATTR_BULK, 64, NULL);
-	usbd_ep_setup(usbd_dev, 0x83, USB_ENDPOINT_ATTR_INTERRUPT, 16, NULL);
-
-	usbd_register_control_callback(usbd_dev,
-		USB_REQ_TYPE_CLASS | USB_REQ_TYPE_INTERFACE,
-		USB_REQ_TYPE_TYPE | USB_REQ_TYPE_RECIPIENT,
-		cdcacm_control_request);
-}
-
 
 int main(void) {
-	usbd_device *usbd_dev;
-	
-	//rcc_clock_setup_in_hsi_out_24mhz();
 	rcc_clock_setup_in_hse_8mhz_out_72mhz();
 
 	rcc_periph_clock_enable(RCC_GPIOA);
 	rcc_periph_clock_enable(RCC_GPIOC);
-
-	gpio_set_mode(GPIOC, GPIO_MODE_OUTPUT_2_MHZ, GPIO_CNF_OUTPUT_PUSHPULL, GPIO13);
-	//int i = 0;
-	//while (1) {
-		//gpio_set(GPIOC, GPIO13);
-		gpio_clear(GPIOC, GPIO13);
-	//	++i;
-	//}
-
-	// init usb (is on PA12/PA11)
-	usbd_dev = usbd_init(&st_usbfs_v1_usb_driver,
-		&device,
-		&config,
-		strings, 3,
-		control_buffer, sizeof(control_buffer));
+	rcc_periph_clock_enable(RCC_USB);
 	
-	usbd_register_set_config_callback(usbd_dev, cdcacm_set_config);
+	
+	// 23.4.2 System and power-on reset
+	
+	// switch on usb transceiver, but keep reset
+	SET_REG(USB_CNTR_REG, USB_CNTR_FRES);
+	
+	// wait
+	for (int i = 0; i < 0x80000; i++)
+		__asm__("nop");
+			
+	// exit reset of usb
+	SET_REG(USB_CNTR_REG, 0);
+		
+	
+	gpio_set_mode(GPIOC, GPIO_MODE_OUTPUT_2_MHZ, GPIO_CNF_OUTPUT_PUSHPULL, GPIO13);
+	gpio_clear(GPIOC, GPIO13); // led on
 
-	while (1)
-		usbd_poll(usbd_dev);
 
+	// setup in default state
+	setupUsb();
+
+	// wait for incoming request or reset
+	enum Mode mode = IDLE;
+	while (1) {
+		if (GET_REG(USB_ISTR_REG) & USB_ISTR_RESET) {
+			// reset detected: setup in default state
+			setupUsb();		
+		}
+		uint16_t ep0 = GET_REG(USB_EP_REG(0));
+		if (ep0 & USB_EP_RX_CTR) {
+			if (ep0 & USB_EP_SETUP) {
+				// received a setup packet from the host
+				if ((GET_REG(USB_EP_RX_COUNT(0)) & 0x3ff) >= sizeof(struct usbRequest)) {
+					
+					// copy request from rx buffer to system memory
+					uint16_t * src = (uint16_t*)USB_GET_EP_RX_BUFF(0);
+					uint16_t * dst = (uint16_t*)&request;
+					for (int i = 0; i < sizeof(struct usbRequest)/2; ++i) {
+						*dst = *src;
+						src += 2; // ABP1 is 32 bit only
+						++dst;
+					}
+	
+					// enable receiving again
+					SET_REG(USB_EP_REG(0), USB_EP_TX_CTR | USB_EP_TYPE_CONTROL | (USB_EP_RX_STAT_NAK ^ USB_EP_RX_STAT_VALID));
+					
+					// check request type
+					// https://www.beyondlogic.org/usbnutshell/usb6.shtml			
+					if (request.bmRequestType == 0x00) {
+						// write request to standard device
+						if (request.bRequest == 0x05) {
+							// set address
+							mode = SET_ADDRESS;
+							address = request.wValue;
+							
+							// setup zero length packet in tx buffer for status stage
+							send(0, NULL, 0);
+						}
+					} else if (request.bmRequestType == 0x80) {
+						// read request to standard device
+						//gpio_set(GPIOC, GPIO13); // led off						
+						if (request.bRequest == 0x06) {
+							// get descriptor
+							mode = GET_DESCRIPTOR;
+							
+							// copy descriptor from flash into tx buffer
+							/*uint16_t * src = (uint16_t*)&device;
+							uint16_t * dst = (uint16_t*)USB_GET_EP_TX_BUFF(0);
+							int size = min(sizeof(struct usbDeviceDescriptor), request.wLength)+1;
+							for (int i = 0; i < size/2; ++i) {
+								*dst = *src;
+								++src; // ABP1 is 32 bit only
+								dst += 2;
+							}
+							SET_REG(USB_EP_TX_COUNT(0), size);
+							
+							// indicate that we are ready to send
+							SET_REG(USB_EP_REG(0), USB_EP_RX_CTR | USB_EP_TYPE_CONTROL | (USB_EP_TX_STAT_NAK ^ USB_EP_TX_STAT_VALID));
+							*/
+							
+							// copy device descriptor to tx buffer
+							int size = min(sizeof(struct usbDeviceDescriptor), request.wLength);
+							send(0, &device, size);
+						}
+					}					
+				} else {
+					
+					// error: enable receiving again, stall send
+					//receive(0, NULL, 0);
+					//stallSend(0);
+					
+				}
+			} else {
+				// received a packet from the host
+				switch (mode) {
+				case GET_DESCRIPTOR:
+					// zlp received (status stage)
+				gpio_set(GPIOC, GPIO13); // led off
+					mode = IDLE;
+					break;					
+				}
+				
+			}
+		}
+		if (ep0 & USB_EP_TX_CTR) {
+			// sent a packet to the host
+			switch (mode) {
+			case SET_ADDRESS:
+				// zlp sent (status stage), now we can set the address
+				SET_REG(USB_DADDR_REG, USB_DADDR_EF | address);
+				mode = IDLE;
+				break;
+			case GET_DESCRIPTOR:
+				// prepare next data packet (data stage)
+				send(0, NULL, 0);
+				
+				//SET_REG(USB_EP_TX_COUNT(0), 0);
+
+				// indicate that we are ready to send
+				//SET_REG(USB_EP_REG(0), USB_EP_RX_CTR | USB_EP_TYPE_CONTROL | (USB_EP_TX_STAT_NAK ^ USB_EP_TX_STAT_VALID));
+				
+				break;
+			}
+
+		}
+	}
 	return 0;
 }
