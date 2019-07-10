@@ -1,0 +1,4 @@
+# bluepill usb device
+
+SUBSYSTEMS=="usb", ATTRS{idVendor}=="0483", ATTRS{idProduct}=="5721", \
+    MODE="660", GROUP="plugdev", TAG+="uaccess"

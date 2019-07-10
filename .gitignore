@@ -1,5 +1,9 @@
 build*/
 cmake-build*/
+*.bin
+*.elf
+*.d
+*.ld
 
 # CLion
 .idea/

@@ -1,5 +1,6 @@
-DEVICE = STM32F103C8
+# clone libopencm3 into this directory from https://github.com/libopencm3/libopencm3
 OPENCM3_DIR = libopencm3
+DEVICE = STM32F103C8
 OBJS += main.o
 
 CFLAGS += -Os -ggdb3

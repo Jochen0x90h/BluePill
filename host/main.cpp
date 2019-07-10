@@ -1,9 +1,10 @@
 #include <stdio.h>
 #include <string.h>
+#include <unistd.h>
 #include <libusb.h>
 
 // https://github.com/libusb/libusb/blob/master/examples/listdevs.c
-static void print_devs(libusb_device **devs)
+static void printDevices(libusb_device **devs)
 {
 	libusb_device *dev;
 	int i = 0, j = 0;
@@ -33,7 +34,7 @@ static void print_devs(libusb_device **devs)
 }
 
 // https://github.com/libusb/libusb/blob/master/examples/testlibusb.c
-static int print_device(libusb_device *dev, int level)
+static int printDevice(libusb_device *dev, int level)
 {
 	libusb_device_descriptor desc;
 	libusb_device_handle *handle = NULL;
@@ -49,7 +50,9 @@ static int print_device(libusb_device *dev, int level)
 	printf("%04x:%04x\n", desc.idVendor, desc.idProduct);
 	printf("\tBus: %d\n", libusb_get_bus_number(dev));
 	printf("\tDevice: %d\n", libusb_get_device_address(dev));
-	
+	if (desc.idVendor == 0x0483) {
+		int x = 0;
+	}
 	ret = libusb_open(dev, &handle);
 	if (LIBUSB_SUCCESS == ret) {
 		printf("\tOpen\n");
@@ -70,6 +73,8 @@ static int print_device(libusb_device *dev, int level)
 		
 	
 		libusb_close(handle);
+	} else {
+		printf("\tOpen error: %d\n", ret);
 	}
 
 		// configurations
@@ -143,12 +148,50 @@ int main(void) {
 	}
 
 	// print list of devices
-	print_devs(devs);
+	printDevices(devs);
 
-	
 	for (int i = 0; devs[i]; ++i) {
-		print_device(devs[i], 0);
+		printDevice(devs[i], 0);
 	}
+
+
+	for (int i = 0; devs[i]; ++i) {
+		libusb_device *dev = devs[i];
+		libusb_device_descriptor desc;
+
+		int ret = libusb_get_device_descriptor(dev, &desc);
+		if (ret < 0) {
+			fprintf(stderr, "failed to get device descriptor");
+			return -1;
+		}
+		if (desc.idVendor == 0x0483 && desc.idProduct == 0x5721) {
+			libusb_device_handle *handle;
+			ret = libusb_open(dev, &handle);
+			if (ret == LIBUSB_SUCCESS) {
+
+				// set configuration (reset alt_setting, reset toggles)
+				libusb_set_configuration(handle, 1);
+
+				// claim interface with bInterfaceNumber = 0
+				ret = libusb_claim_interface(handle, 0);
+				printf("claim interface %d\n", ret);
+
+				//ret = libusb_set_interface_alt_setting(handle, 0, 0);
+				//printf("set alternate setting %d\n", ret);
+
+
+				uint8_t data[4] = {};
+				while (true) {
+					int transferred = 0;
+					ret = libusb_interrupt_transfer(handle, 0x01, data, 4, &transferred, 0);
+					printf("%d transferred %d 0x%x\n", ret, transferred, data[0]);
+					data[0] = (data[0] + 1) & 3;
+					usleep(1000000);
+				}
+			}
+		}
+	}
+
 
 	libusb_free_device_list(devs, 1);
 
