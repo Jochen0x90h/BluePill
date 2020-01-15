@@ -11,12 +11,15 @@ LDLIBS += -Wl,--start-group -lc -lgcc -lnosys -Wl,--end-group
 include $(OPENCM3_DIR)/mk/genlink-config.mk
 include $(OPENCM3_DIR)/mk/gcc-config.mk
 
-.PHONY: clean all
+.PHONY: all info clean
 
 all: binary.elf binary.bin
 
 flash: binary.bin
 	st-flash write binary.bin 0x8000000
+
+info:
+	st-info --probe
 
 clean:
 	$(Q)$(RM) -rf binary.* *.o

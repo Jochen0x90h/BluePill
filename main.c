@@ -7,38 +7,54 @@
 // stm32f103xx data sheet: https://www.st.com/resource/en/datasheet/CD00161566.pdf
 // stm32f103xx reference manual: https://www.st.com/content/ccc/resource/technical/document/reference_manual/59/b9/ba/7f/11/af/43/d5/CD00171190.pdf/files/CD00171190.pdf/jcr:content/translations/en.CD00171190.pdf
 //   usb: chapter 23, page 622
+//   can: chapter 24, page 653
+
+// USB
 // usb overview: https://www.beyondlogic.org/usbnutshell/usb5.shtml
 // libopencm3 example: https://github.com/libopencm3/libopencm3-examples/blob/master/examples/stm32/f1/stm32-maple/usb_cdcacm/cdcacm.c
 // other usb example: https://github.com/Erlkoenig90/f1usb
 // usbmon: https://www.kernel.org/doc/Documentation/usb/usbmon.txt
 
 
-inline void ledOn() {
+static void ledOn() {
 	gpio_clear(GPIOC, GPIO13);
 }
 
-inline void ledOff() {
+static void ledOff() {
 	gpio_set(GPIOC, GPIO13);
 }
 
-inline void ledToggle() {
+static void ledToggle() {
 	gpio_toggle(GPIOC, GPIO13);
 }
 
 
-// usb descriptors, see libusb.h
-enum DescriptorType {
-	DESCRIPTOR_DEVICE = 0x01,
-	DESCRIPTOR_CONFIGURATION = 0x02,
-	DESCRIPTOR_INTERFACE = 0x04,
-	DESCRIPTOR_ENDPOINT = 0x05
+inline int min(int a, int b) {
+	return a < b ? a : b;
+}
+
+
+// USB
+// ------------------------------------
+
+// transfer direction
+enum UsbDirection {
+	USB_OUT = 0, // to device
+	USB_IN = 0x80 // to host
 };
 
-enum EndpointType {
-	ENDPOINT_CONTROL = 0,
-	ENDPOINT_ISOCHRONOUS = 1,
-	ENDPOINT_BULK = 2,
-	ENDPOINT_INTERRUPT = 3
+enum UsbDescriptorType {
+	USB_DESCRIPTOR_DEVICE = 0x01,
+	USB_DESCRIPTOR_CONFIGURATION = 0x02,
+	USB_DESCRIPTOR_INTERFACE = 0x04,
+	USB_DESCRIPTOR_ENDPOINT = 0x05
+};
+
+enum UsbEndpointType {
+	USB_ENDPOINT_CONTROL = 0,
+	USB_ENDPOINT_ISOCHRONOUS = 1,
+	USB_ENDPOINT_BULK = 2,
+	USB_ENDPOINT_INTERRUPT = 3
 };
 
 struct UsbDeviceDescriptor {
@@ -92,16 +108,16 @@ struct UsbEndpointDescriptor {
 
 
 // device descriptor
-static const struct UsbDeviceDescriptor device = {
+static const struct UsbDeviceDescriptor usbDevice = {
 	.bLength = sizeof(struct UsbDeviceDescriptor),
-	.bDescriptorType = DESCRIPTOR_DEVICE,
+	.bDescriptorType = USB_DESCRIPTOR_DEVICE,
 	.bcdUSB = 0x0200, // USB 2.0
 	.bDeviceClass = 0xff, // no class
 	.bDeviceSubClass = 0xff,
 	.bDeviceProtocol = 0xff,
 	.bMaxPacketSize0 = 64, // max packet size for endpoint 0
 	.idVendor = 0x0483, // STMicroelectronics
-	.idProduct = 0x5721, // Interrupt Demo
+	.idProduct = 0x5722, // Bulk Demo
 	.bcdDevice = 0x0100, // device version
 	.iManufacturer = 0, // index into string table
 	.iProduct = 0, // index into string table
@@ -110,18 +126,18 @@ static const struct UsbDeviceDescriptor device = {
 };
 
 // configuration descriptor
-struct Configuration {
+struct UsbConfiguration {
 	struct UsbConfigDescriptor config;
 	struct UsbInterfaceDescriptor interface;
 	struct UsbEndpointDescriptor endpoint1;
 	struct UsbEndpointDescriptor endpoint2;
 } __attribute__((packed));
 
-static const struct Configuration configuration = {
+static const struct UsbConfiguration usbConfiguration = {
 	.config = {
 		.bLength = sizeof(struct UsbConfigDescriptor),
-		.bDescriptorType = DESCRIPTOR_CONFIGURATION,
-		.wTotalLength = sizeof(struct Configuration),
+		.bDescriptorType = USB_DESCRIPTOR_CONFIGURATION,
+		.wTotalLength = sizeof(struct UsbConfiguration),
 		.bNumInterfaces = 1,
 		.bConfigurationValue = 1,
 		.iConfiguration = 0,
@@ -130,7 +146,7 @@ static const struct Configuration configuration = {
 	},
 	.interface = {
 		.bLength = sizeof(struct UsbInterfaceDescriptor),
-		.bDescriptorType = DESCRIPTOR_INTERFACE,
+		.bDescriptorType = USB_DESCRIPTOR_INTERFACE,
 		.bInterfaceNumber = 0,
 		.bAlternateSetting = 0,
 		.bNumEndpoints = 2,
@@ -141,88 +157,113 @@ static const struct Configuration configuration = {
 	},
 	.endpoint1 = {
 		.bLength = sizeof(struct UsbEndpointDescriptor),
-		.bDescriptorType = DESCRIPTOR_ENDPOINT,
-		.bEndpointAddress = 0x81, // in 1
-		.bmAttributes = ENDPOINT_INTERRUPT,
+		.bDescriptorType = USB_DESCRIPTOR_ENDPOINT,
+		.bEndpointAddress = USB_IN | 1, // in 1 (tx)
+		.bmAttributes = USB_ENDPOINT_BULK,
 		.wMaxPacketSize = 16,
 		.bInterval = 1 // polling interval
 	},
 	.endpoint2 = {
 		.bLength = sizeof(struct UsbEndpointDescriptor),
-		.bDescriptorType = DESCRIPTOR_ENDPOINT,
-		.bEndpointAddress = 0x01, // out 1
-		.bmAttributes = ENDPOINT_INTERRUPT,
+		.bDescriptorType = USB_DESCRIPTOR_ENDPOINT,
+		.bEndpointAddress = USB_OUT | 2, // out 2 (rx)
+		.bmAttributes = USB_ENDPOINT_BULK,
 		.wMaxPacketSize = 16,
 		.bInterval = 1 // polling interval
 	}
 };
 
+// control request type  
+enum UsbRequestType {
+	USB_REQUEST_TYPE_MASK = (0x03 << 5),
+	USB_REQUEST_TYPE_STANDARD = (0x00 << 5),
+	USB_REQUEST_TYPE_CLASS = (0x01 << 5),
+	USB_REQUEST_TYPE_VENDOR = (0x02 << 5),
+	USB_REQUEST_TYPE_RESERVED = (0x03 << 5)
+};
 
-// control request, transferred in the setup packet
+// control request recipient
+enum UsbRequestRecipient {
+	USB_RECIPIENT_MASK = 0x1f,
+	USB_RECIPIENT_DEVICE = 0x00,
+	USB_RECIPIENT_INTERFACE = 0x01,
+	USB_RECIPIENT_ENDPOINT = 0x02,
+	USB_RECIPIENT_OTHER = 0x03
+};
+
+// control request data, transferred in the setup packet
 struct UsbRequest {
-	uint8_t bmRequestType;
+	uint8_t bmRequestType; // combination of UsbDirection, UsbRequestType and UsbRequestRecipient
 	uint8_t bRequest;
 	uint16_t wValue;
 	uint16_t wIndex;
 	uint16_t wLength;
 };
 
-struct UsbRequest request;
-
-
-
-void setupUsb() {
+// setup usb and control endpoints (assumes that usb just exited reset state)
+void usbSetup() {
 	// clear interrupts of usb
 	SET_REG(USB_ISTR_REG, 0);
 
 	// packet memory layout
 	// offset | size | description
 	//      0 |   32 | buffer table for 4 endpoints
-	//     32 |   64 | tx buffer of endpoint 0
-	//     96 |   64 | rx buffer of endpoint 0
-	//    160 |   16 | tx buffer of endpoint 1
-	//    176 |   16 | rx buffer of endpoint 2
+	//     32 |   64 | tx buffer of control endpoint 0
+	//     96 |   64 | rx buffer of control endpoint 0
+	//    160 |   16 | tx buffer of bulk endpoint 1 (in to host)
+	//    176 |   16 | rx buffer of bulk endpoint 2 (out from host)
 
 	// set buffer table address inside packet memory (relative to USB_PMA_BASE)
 	SET_REG(USB_BTABLE_REG, 0);
 	
-	// setup buffers for endpoint 0
+	// setup buffers for endpoint 0 (tx count is set when actually sending data)
 	SET_REG(USB_EP_TX_ADDR(0), 32);
-	//SET_REG(USB_EP_TX_COUNT(0), ??); set tx buffer size when actually sending
 	SET_REG(USB_EP_RX_ADDR(0), 96);
 	SET_REG(USB_EP_RX_COUNT(0), 0x8000 | (1 << 10)); // rx buffer size is 64
 
-	// setup endpoint 0
+	// setup control endpoint 0
 	SET_REG(USB_EP_REG(0), USB_EP_TYPE_CONTROL | USB_EP_RX_STAT_VALID | 0);
 
-	// enable usb at address 0
-	SET_REG(USB_DADDR_REG, USB_DADDR_EF);
+	// enable usb at usb address 0
+	SET_REG(USB_DADDR_REG, USB_DADDR_EF | 0);
 }
 
-void setupEndpoints() {
+// setup the data endpoints
+void usbSetupEndpoints() {
+	// setup buffers for endpoint 1 (tx count is set when actually sending data)
+	SET_REG(USB_EP_TX_ADDR(1), 160);
+	SET_REG(USB_EP_RX_ADDR(2), 176);
+	SET_REG(USB_EP_RX_COUNT(2), 8 << 10); // rx buffer size is 16
+
 	// clear rx and tx flags, endpoint type, kind and address
 	uint16_t clear = USB_EP_RX_CTR | USB_EP_TX_CTR | USB_EP_TYPE | USB_EP_KIND | USB_EP_ADDR;
 
-	// setup buffers for endpoint 1
-	SET_REG(USB_EP_TX_ADDR(1), 160);
-	//SET_REG(USB_EP_TX_COUNT(1), ??); set tx buffer size when actually sending
-	SET_REG(USB_EP_RX_ADDR(1), 176);
-	SET_REG(USB_EP_RX_COUNT(1), 8 << 10); // rx buffer size is 16
+	// set endpoint type
+	uint16_t set = USB_EP_TYPE_BULK;
 
-	// set endpoint type and address (overrides clear)
-	uint16_t set = USB_EP_TYPE_INTERRUPT | 1;
-
-	// stall send, ready to receive, clear other toggle bits
+	// tx (in) endpoint 1: stall send, clear other toggle bits
 	uint16_t epReg = GET_REG(USB_EP_REG(1));
-	SET_REG(USB_EP_REG(1), ((epReg ^ USB_EP_TX_STAT_STALL ^ USB_EP_RX_STAT_VALID) & ~clear) | set);
+	SET_REG(USB_EP_REG(1), ((epReg ^ USB_EP_TX_STAT_STALL) & ~clear) | set | 1);
+
+	// rx (out) endpoint 2: ready to receive, clear other toggle bits
+	epReg = GET_REG(USB_EP_REG(2));
+	SET_REG(USB_EP_REG(2), ((epReg ^ USB_EP_RX_STAT_VALID) & ~clear) | set | 2);
 }
 
-inline int min(int a, int b) {
-	return a < b ? a : b;
-}
+/**
+	Note:
+	These flags of USB_EP_REG toggle when written with 1 and don't change when written with 0
+	USB_EP_RX_DTOG
+	USB_EP_RX_STAT
+	USB_EP_TX_DTOG
+	USB_EP_TX_STAT
+	These flags can only be cleared and should be written with 1 to keep current state
+	USB_EP_RX_CTR
+	USB_EP_TX_CTR
+*/
 
-
-void send(int ep, const void *data, int size) {
+// send data to the host
+void usbSend(int ep, const void *data, int size) {
 	// copy data from flash into tx buffer
 	const uint16_t * src = (const uint16_t*)data;
 	uint16_t * dst = (uint16_t*)USB_GET_EP_TX_BUFF(ep);
@@ -236,11 +277,10 @@ void send(int ep, const void *data, int size) {
 	// set size of packet in tx buffer
 	SET_REG(USB_EP_TX_COUNT(ep), size);
 	
-	
-	// clear tx flag and don't change other toggle flags
+	// clear tx flag and don't change other toggle flags (see note above)
 	uint16_t clear = USB_EP_TX_CTR | USB_EP_RX_DTOG | USB_EP_TX_DTOG | USB_EP_RX_STAT;
 
-	// don't change rx flag
+	// don't clear rx flag (see note above)
 	uint16_t set = USB_EP_RX_CTR;
 
 	// indicate that we are ready to send
@@ -248,23 +288,25 @@ void send(int ep, const void *data, int size) {
 	SET_REG(USB_EP_REG(ep), ((epReg ^ USB_EP_TX_STAT_VALID) & ~clear) | set);
 }
 
-void sendStall(int ep) {
-	// clear tx flag and don't change other toggle flags
+// acknowledge send requests with a stall to indicate unsupported request
+void usbSendStall() {
+	// clear tx flag and don't change other toggle flags (see note above)
 	uint16_t clear = USB_EP_TX_CTR | USB_EP_RX_DTOG | USB_EP_TX_DTOG | USB_EP_RX_STAT;
 
-	// don't change rx flag
+	// don't clear rx flag (see note above)
 	uint16_t set = USB_EP_RX_CTR;
 
 	// indicate that we are ready to send
-	uint16_t epReg = GET_REG(USB_EP_REG(ep));
-	SET_REG(USB_EP_REG(ep), ((epReg ^ USB_EP_TX_STAT_STALL) & ~clear) | set);
+	uint16_t epReg = GET_REG(USB_EP_REG(0));
+	SET_REG(USB_EP_REG(0), ((epReg ^ USB_EP_TX_STAT_STALL) & ~clear) | set);
 }
 
-void receive(int ep) {
-	// clear rx flag and don't change other toggle flags
+// indicate that we want to receive data from the host
+void usbReceive(int ep) {
+	// clear rx flag and don't change other toggle flags (see note above)
 	uint16_t clear = USB_EP_RX_CTR | USB_EP_RX_DTOG | USB_EP_TX_DTOG | USB_EP_TX_STAT;
 
-	// don't change tx flag
+	// don't clear tx flag (see note above)
 	uint16_t set = USB_EP_TX_CTR;
 
 	// indicate that we are ready to receive
@@ -272,25 +314,28 @@ void receive(int ep) {
 	SET_REG(USB_EP_REG(ep), ((epReg ^ USB_EP_RX_STAT_VALID) & ~clear) | set);
 }
 
-
-
-enum Mode {
+// the current operating mode of the usb device handler code
+enum UsbMode {
 	IDLE,
 	SET_ADDRESS,
 	AWAIT_TX,
 	GET_DESCRIPTOR,
 };
-uint8_t address = 0;
 
 int main(void) {
+	// SYSCLK = 72MHz, AHB = 72MHz, APB1 = 36MHz, APB2 = 72MHz
 	rcc_clock_setup_in_hse_8mhz_out_72mhz();
 
 	rcc_periph_clock_enable(RCC_GPIOA);
 	rcc_periph_clock_enable(RCC_GPIOC);
-	rcc_periph_clock_enable(RCC_USB);
+	rcc_periph_clock_enable(RCC_USB);	
 	
-	
-	// 23.4.2 System and power-on reset
+	// set PC13 to output for the LED
+	gpio_set_mode(GPIOC, GPIO_MODE_OUTPUT_2_MHZ, GPIO_CNF_OUTPUT_PUSHPULL, GPIO13);
+	ledOff();
+
+	// init USB
+	// reference manual: 23.4.2 System and power-on reset
 	
 	// switch on usb transceiver, but keep reset
 	SET_REG(USB_CNTR_REG, USB_CNTR_FRES);
@@ -301,23 +346,22 @@ int main(void) {
 			
 	// exit reset of usb
 	SET_REG(USB_CNTR_REG, 0);
-		
-	
-	// set PC13 to output for the LED
-	gpio_set_mode(GPIOC, GPIO_MODE_OUTPUT_2_MHZ, GPIO_CNF_OUTPUT_PUSHPULL, GPIO13);
-	ledOn();
-
 
 	// setup in default state
-	setupUsb();
+	usbSetup();
+
+	// set usb operating mode
+	enum UsbMode usbMode = IDLE;
+	
+	// temp variable for usb address
+	uint8_t usbAddress = 0;
 
 	// wait for incoming request or reset
-	enum Mode mode = IDLE;
 	while (1) {
 		// check reset
 		if (GET_REG(USB_ISTR_REG) & USB_ISTR_RESET) {
 			// reset detected: setup in default state
-			setupUsb();
+			usbSetup();
 		}
 
 		// check control endpoint
@@ -326,147 +370,165 @@ int main(void) {
 			if (ep0 & USB_EP_SETUP) {
 				// received a setup packet from the host
 				if ((GET_REG(USB_EP_RX_COUNT(0)) & 0x3ff) >= sizeof(struct UsbRequest)) {
+					struct UsbRequest request;
 
 					// copy request from rx buffer to system memory
-					uint16_t *src = (uint16_t *) USB_GET_EP_RX_BUFF(0);
-					uint16_t *dst = (uint16_t *) &request;
+					uint16_t *src = (uint16_t*)USB_GET_EP_RX_BUFF(0);
+					uint16_t *dst = (uint16_t*)&request;
 					for (int i = 0; i < sizeof(struct UsbRequest) / 2; ++i) {
 						*dst = *src;
-						src += 2; // ABP1 bus is 32 bit only
+						src += 2; // ABP1 bus is 32 bit only, therefore skip over upper 16 bit
 						++dst;
 					}
 
 					// check request type
 					// https://www.beyondlogic.org/usbnutshell/usb6.shtml			
-					if (request.bmRequestType == 0x00) {
+					switch (request.bmRequestType) {
+					case USB_OUT | USB_REQUEST_TYPE_STANDARD | USB_RECIPIENT_DEVICE:
 						// write request to standard device
 						if (request.bRequest == 0x05) {
-							// set address
-							mode = SET_ADDRESS;
-							address = request.wValue;
+							// set address, but store in memory until zlp was sent
+							usbMode = SET_ADDRESS;
+							usbAddress = request.wValue;
 
-							// setup zero length packet in tx buffer for status stage
-							send(0, NULL, 0);
+							// setup zero length packet (zlp) in tx buffer for status stage
+							usbSend(0, NULL, 0);
 						} else if (request.bRequest == 0x09) {
 							// set configuration
-							mode = AWAIT_TX;
+							usbMode = AWAIT_TX;
 							uint8_t bConfigurationValue = request.wValue;
-							setupEndpoints();
+							usbSetupEndpoints();
 
 							// send first data
-							send(1, &device, 4);
+							usbSend(1, &usbDevice, 4);
 
-							// setup zero length packet in tx buffer for status stage
-							send(0, NULL, 0);
+							// setup zero length packet (zlp) in tx buffer for status stage
+							usbSend(0, NULL, 0);
 						} else {
 							// unsupported request: stall
-							sendStall(0);
+							usbSendStall();
 						}
-					} else if (request.bmRequestType == 0x80) {
+						break;
+					case USB_IN | USB_REQUEST_TYPE_STANDARD | USB_RECIPIENT_DEVICE:
 						// read request to standard device
 						if (request.bRequest == 0x06) {
 							// get descriptor
-							mode = GET_DESCRIPTOR;
-
 							uint8_t descriptorType = request.wValue >> 8;
-							if (descriptorType == DESCRIPTOR_DEVICE) {
-								// copy device descriptor to tx buffer
+							if (descriptorType == USB_DESCRIPTOR_DEVICE) {
+								// send device descriptor
+								usbMode = GET_DESCRIPTOR;
 								int size = min(sizeof(struct UsbDeviceDescriptor), request.wLength);
-								send(0, &device, size);
-							} else if (descriptorType == DESCRIPTOR_CONFIGURATION) {
-								int size = min(sizeof(struct Configuration), request.wLength);
-								send(0, &configuration, size);
+								usbSend(0, &usbDevice, size);
+							} else if (descriptorType == USB_DESCRIPTOR_CONFIGURATION) {
+								// send configuration descriptor
+								usbMode = GET_DESCRIPTOR;
+								int size = min(sizeof(struct UsbConfiguration), request.wLength);
+								usbSend(0, &usbConfiguration, size);
+ledOn();
+							} else {
+								// unsupported descriptor type: stall
+								usbSendStall();
 							}
 						} else {
 							// unsupported request: stall
-							sendStall(0);
+							usbSendStall();
 						}
-					} else if (request.bmRequestType == 0x01) {
-							// write request to standard interface
-							if (request.bRequest == 0x0b) {
-								// set interface
-								mode = AWAIT_TX;
-								uint8_t bInterface = request.wIndex;
-								uint8_t bAlternateSetting = request.wValue;
+						break;
+					case USB_OUT | USB_REQUEST_TYPE_STANDARD | USB_RECIPIENT_INTERFACE:
+						// write request to standard interface
+						if (request.bRequest == 0x0b) {
+							// set interface
+							usbMode = AWAIT_TX;
+							uint8_t bInterface = request.wIndex;
+							uint8_t bAlternateSetting = request.wValue;
 
-								// setup zero length packet in tx buffer for status stage
-								send(0, NULL, 0);
-							} else {
-								// unsupported request: stall
-								sendStall(0);
-							}
-					} else if (request.bmRequestType == 0x02) {
+							// setup zero length packet in tx buffer for status stage
+							usbSend(0, NULL, 0);
+						} else {
+							// unsupported request: stall
+							usbSendStall(0);
+						}
+						break;
+					case USB_OUT | USB_REQUEST_TYPE_STANDARD | USB_RECIPIENT_ENDPOINT:
 						// write request to standard endpoint
 						if (request.bRequest == 0x01) {
 							// clear feature
-							mode = AWAIT_TX;
+							usbMode = AWAIT_TX;
 
 							// setup zero length packet in tx buffer for status stage
-							send(0, NULL, 0);
+							usbSend(0, NULL, 0);
 						} else {
 							// unsupported request: stall
-							sendStall(0);
+							usbSendStall(0);
 						}
-					} else {
+						break;
+					default:
 						// unsupported request type: stall
-						sendStall(0);
+						usbSendStall(0);
 					}
 				} else {
 					// request too short: stall
-					sendStall(0);
+					usbSendStall(0);
 				}
 			} else {
 				// received a packet from the host
-				switch (mode) {
-					case GET_DESCRIPTOR:
-						// zlp received (status stage)
-						//ledOff();
-						mode = IDLE;
-						break;
+				switch (usbMode) {
+				case GET_DESCRIPTOR:
+					// zlp received (out status stage)
+ledOff();
+					usbMode = IDLE;
+					break;
 				}
 			}
 
 			// enable receiving again
-			receive(0);
+			usbReceive(0);
 		}
 		if (ep0 & USB_EP_TX_CTR) {
-			// sent a packet to the host
-			switch (mode) {
-				case SET_ADDRESS:
-					// zlp sent (status stage), now we can set the address
-					SET_REG(USB_DADDR_REG, USB_DADDR_EF | address);
-					mode = IDLE;
-					break;
-				case AWAIT_TX:
-					// zlp sent (status stage)
-					mode = IDLE;
-					break;
-				case GET_DESCRIPTOR:
-					// todo: prepare next data packet (data stage)
-					send(0, NULL, 0);
-
-					break;
+			// last send to host has completed
+			switch (usbMode) {
+			case SET_ADDRESS:
+				// zlp sent (out status stage), now we can set the usb address
+				SET_REG(USB_DADDR_REG, USB_DADDR_EF | usbAddress);
+				usbMode = IDLE;
+				usbSendStall();
+				break;
+			case AWAIT_TX:
+				// zlp sent (out status stage)
+				usbMode = IDLE;
+				usbSendStall();
+				break;
+			case GET_DESCRIPTOR:
+				// todo: prepare next data packet (out data stage), not needed if descriptor is < 64 bytes
+				usbSend(0, NULL, 0);
+				break;
+			default:
+				usbSendStall();				
 			}
-
 		}
 
 
-		// check data endpoint
+		// check tx (in) endpoint 1
 		uint16_t ep1 = GET_REG(USB_EP_REG(1));
 		if (ep1 & USB_EP_TX_CTR) {
+			// last send to host has completed
 			ledToggle();
 
 			// send next data
-			send(1, &device, 4);
+			usbSend(1, &usbDevice, 4);
 		}
-		if (ep1 & USB_EP_RX_CTR) {
-			if (*USB_GET_EP_RX_BUFF(1))
+		
+		// check rx (out) endpoint 2
+		uint16_t ep2 = GET_REG(USB_EP_REG(2));
+		if (ep2 & USB_EP_RX_CTR) {
+			// received data from the host
+			if (*USB_GET_EP_RX_BUFF(2))
 				ledOn();
 			else
 				ledOff();
 
 			// receive next data
-			receive(1);
+			usbReceive(2);
 		}
 	}
 	return 0;

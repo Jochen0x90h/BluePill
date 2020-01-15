@@ -3,6 +3,13 @@
 #include <unistd.h>
 #include <libusb.h>
 
+// transfer direction
+enum UsbDirection {
+	USB_OUT = 0, // to device
+	USB_IN = 0x80 // to host
+};
+
+
 // https://github.com/libusb/libusb/blob/master/examples/listdevs.c
 static void printDevices(libusb_device **devs)
 {
@@ -50,9 +57,6 @@ static int printDevice(libusb_device *dev, int level)
 	printf("%04x:%04x\n", desc.idVendor, desc.idProduct);
 	printf("\tBus: %d\n", libusb_get_bus_number(dev));
 	printf("\tDevice: %d\n", libusb_get_device_address(dev));
-	if (desc.idVendor == 0x0483) {
-		int x = 0;
-	}
 	ret = libusb_open(dev, &handle);
 	if (LIBUSB_SUCCESS == ret) {
 		printf("\tOpen\n");
@@ -132,6 +136,7 @@ static int printDevice(libusb_device *dev, int level)
 	return 0;
 }
 
+
 int main(void) {
 	libusb_device **devs;
 	int r;
@@ -164,7 +169,7 @@ int main(void) {
 			fprintf(stderr, "failed to get device descriptor");
 			return -1;
 		}
-		if (desc.idVendor == 0x0483 && desc.idProduct == 0x5721) {
+		if (desc.idVendor == 0x0483 && desc.idProduct == 0x5722) {
 			libusb_device_handle *handle;
 			ret = libusb_open(dev, &handle);
 			if (ret == LIBUSB_SUCCESS) {
@@ -183,7 +188,8 @@ int main(void) {
 				uint8_t data[4] = {};
 				while (true) {
 					int transferred = 0;
-					ret = libusb_interrupt_transfer(handle, 0x01, data, 4, &transferred, 0);
+					//
+					ret = libusb_bulk_transfer(handle, USB_OUT | 2, data, 4, &transferred, 0);
 					printf("%d transferred %d 0x%x\n", ret, transferred, data[0]);
 					data[0] = (data[0] + 1) & 3;
 					usleep(1000000);
